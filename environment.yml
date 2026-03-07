@@ -1,0 +1,11 @@
+name: xgb_openmp
+channels:
+  - defaults
+dependencies:
+  - python=3.7
+  - pip
+  - numpy
+  - scipy
+  - scikit-learn==0.20.3
+  - pandas
+prefix: C:\Users\mateo\AppData\Local\anaconda3\envs\xgb_openmp
