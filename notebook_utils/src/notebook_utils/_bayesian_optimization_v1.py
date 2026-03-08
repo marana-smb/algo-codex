@@ -6,9 +6,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-import _fast_optimization_v1
+#import _fast_optimization_v1
+#from _fast_optimization_v1 import greedy_threshold_search
 
-from _fast_optimization_v1 import greedy_threshold_search
+from . import _fast_optimization_v1
+from ._fast_optimization_v1 import greedy_threshold_search
 
 # ---------------- Data structures ----------------
 @dataclass(frozen=True)
