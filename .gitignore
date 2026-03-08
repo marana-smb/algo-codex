@@ -2,6 +2,16 @@
 __pycache__/
 *.pyc
 *.pyo
+*.py[cod]
+
+# Local research data
+data/
+outputs/
+
+# Optional model artifacts
+*.pkl
+*.joblib
+*.model
 
 # Python package build artifacts
 *.egg-info/
