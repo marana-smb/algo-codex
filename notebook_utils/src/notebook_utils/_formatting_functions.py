@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import os
+from pathlib import Path
 from typing import Optional
 
 #from datetime import datetime, date
@@ -80,7 +81,8 @@ def event_import(path, filename, front_cols=None, kite_cols=None, sym_ta_cols=No
         drop_cols = []
 
     # Import and process the CSV file
-    event_data = pd.read_csv(path + filename)
+    csv_path = Path(path) / filename
+    event_data = pd.read_csv(csv_path)
     event_data['entry_time'] = pd.to_datetime(event_data['entry_time'])
     event_data['exit_time'] = pd.to_datetime(event_data['exit_time'])
     event_data['normed_date'] = event_data['entry_time'].dt.date

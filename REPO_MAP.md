@@ -1,5 +1,9 @@
 # Repository Map
 
+This repository is a Codex experimentation workspace.
+
+Code generated here is reviewed manually before being movedto production research repositories.
+
 This repository contains a research platform for developing and testing algorithmic trading models using **event-driven backtest data**.
 
 The platform is designed to support **multiple strategies and predictive models** that share common utilities, data structures, and output conventions.
