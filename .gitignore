@@ -38,3 +38,11 @@ Thumbs.db
 # VSCode settings (ignore everything except interpreter config)
 .vscode/*
 !.vscode/settings.json
+
+# Model artifacts
+outputs/models/*
+outputs/tables/*
+outputs/figures/*
+
+# Folder structure files
+*.txt
