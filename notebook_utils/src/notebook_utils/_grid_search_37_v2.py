@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 
@@ -41,6 +42,7 @@ def randomized_search_on_sample(
     scoring: str = "recall",
     random_state: int = 42,
     search_n_estimators: int = 400,
+    n_jobs: int = 1,
 ) -> Tuple[Dict[str, Any], RandomizedSearchCV]:
     """
     RandomizedSearchCV on a stratified subset drawn via train_test_split.
@@ -82,18 +84,21 @@ def randomized_search_on_sample(
     scorer = make_scorer(recall_score) if scoring == "recall" else scoring
     cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
 
-    search = RandomizedSearchCV(
-        estimator=base,
-        param_distributions=dists,
-        n_iter=n_iter,
-        scoring=scorer,
-        cv=cv,
-        random_state=random_state,
-        n_jobs=-1,
-        verbose=2,
-        refit=False,   # final refit with ES below
-        iid=True,      # sklearn 0.20.3 compatibility
-    )
+    search_kwargs = {
+        "estimator": base,
+        "param_distributions": dists,
+        "n_iter": n_iter,
+        "scoring": scorer,
+        "cv": cv,
+        "random_state": random_state,
+        "n_jobs": n_jobs,
+        "verbose": 2,
+        "refit": False,   # final refit with ES below
+    }
+    if "iid" in inspect.signature(RandomizedSearchCV).parameters:
+        search_kwargs["iid"] = True  # sklearn 0.20.3 compatibility
+
+    search = RandomizedSearchCV(**search_kwargs)
     search.fit(Xs, ys)
     return search.best_params_, search
 
@@ -145,6 +150,7 @@ def tune_xgb_fast_compatible(
     final_n_estimators_cap: int = 4000,
     early_stopping_rounds: int = 100,
     random_state: int = 42,
+    n_jobs: int = 1,
 ) -> Tuple[xgb.XGBClassifier, Dict[str, Any]]:
     """
     End-to-end: randomized search on a stratified subset -> single ES refit on all data.
@@ -156,6 +162,7 @@ def tune_xgb_fast_compatible(
         cv_splits=cv_splits,
         search_n_estimators=search_n_estimators,
         random_state=random_state,
+        n_jobs=n_jobs,
     )
 
     model = final_refit_with_early_stopping(
