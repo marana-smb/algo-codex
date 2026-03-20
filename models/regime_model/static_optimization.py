@@ -91,7 +91,7 @@ GROUP_ALWAYS = [
 
 @dataclass
 class StaticOptimizationConfig:
-    run_label: str = "static_opt"
+    run_id: str = "static_opt"
     max_capital: float = 68500.0
     entry_fee: float = 3.5
     long_short: int = -1
@@ -172,7 +172,7 @@ def _ensure_partition_ready(df: pd.DataFrame, df_name: str) -> None:
 
 def _static_output_dirs(run_config: RunConfig, static_config: StaticOptimizationConfig) -> Dict[str, Path]:
     paths = get_model_paths(run_config)
-    output_dir = paths.table_dir / static_config.run_label
+    output_dir = paths.table_dir / static_config.run_id
     csv_dir = output_dir / "csv"
     json_dir = output_dir / "json"
     output_dir.mkdir(parents=True, exist_ok=True)
