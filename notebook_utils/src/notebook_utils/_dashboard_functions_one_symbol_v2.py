@@ -50,15 +50,21 @@ def create_bydate_data(dta_in: pd.DataFrame, sum_dict: dict, bp: float) -> pd.Da
     dta_out['low_pl_n'] = dta_out['pl_n'].cummin()
     dta_out['high_pl_n'] = dta_out['pl_n'].cummax()
     dta_out['wins'] = (dta_out['pl_n'] > 0).astype(int)
-    dta_out['share_pl_n'] = dta_out['pl_n'] / dta_out['matched_shares']
+    # UPDATED
+    matched_abs = dta_out['matched_shares'].abs()
+    dta_out['share_pl_n'] = np.where(matched_abs != 0, dta_out['pl_n'] / matched_abs, np.nan)
 
     if bp == 1000000:        
         dta_out['ret_g'] = dta_out['pl_g'] / bp
         dta_out['ret_n'] = dta_out['pl_n'] / bp
     else:
         global_max_cap = dta_in['capital'].max()
-        dta_out['ret_g'] = dta_out['pl_g'] / global_max_cap
-        dta_out['ret_n'] = dta_out['pl_n'] / global_max_cap
+        if pd.isna(global_max_cap) or global_max_cap == 0:
+            dta_out['ret_g'] = np.nan
+            dta_out['ret_n'] = np.nan
+        else:
+            dta_out['ret_g'] = dta_out['pl_g'] / global_max_cap
+            dta_out['ret_n'] = dta_out['pl_n'] / global_max_cap
 
     print("global_max_cap:", global_max_cap)
 
@@ -119,13 +125,45 @@ def dashboard(dta_in: pd.DataFrame, comm: float, mod_id: str, long_short: int, d
         pnl_bySymbolDate = create_bysymboldate_data(event_data_add, by_cols, agg_dict)
         pnl_byDate = create_bydate_data(pnl_bySymbolDate, sum_dict, bp)
         ##
+
+        ## UPDATE
+        def safe_div(numerator, denominator):
+            if pd.isna(denominator) or denominator == 0:
+                return np.nan
+            return numerator / denominator
+
         # Calculating metrics for Dashboard
         us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
         start_date = pnl_byDate.iloc[0]['normed_date']
         end_date = pnl_byDate.iloc[-1]['normed_date']
         biz_days = len(pd.date_range(start=start_date, end=end_date, freq=us_bd))
+        
         vol = pnl_byDate['ret_n'].std()
         pnl_byDate['ret_n_neg'] = pnl_byDate['ret_n'].where(pnl_byDate['ret_n'] < 0, 0)
+        downside_std = pnl_byDate['ret_n_neg'].std()
+
+        sharpe_base = safe_div(pnl_byDate['ret_n'].mean(), vol)
+        sharpe = sharpe_base * np.sqrt(252) if pd.notna(sharpe_base) else np.nan
+
+        sortino_base = safe_div(pnl_byDate['ret_n'].mean(), downside_std)
+        sortino = sortino_base * np.sqrt(252) if pd.notna(sortino_base) else np.nan
+
+        share_pl_base = safe_div(
+            pnl_bySymbolDate['pl_n'].sum(),
+            (pnl_bySymbolDate['matched_shares'] * 2 * long_short).sum(),
+        )
+        share_pl = share_pl_base * 100 if pd.notna(share_pl_base) else np.nan
+
+        annual_ret_base = safe_div(np.log(pnl_byDate.iloc[-1]['comp_ret_n']), biz_days)
+        annual_ret = annual_ret_base * 252 if pd.notna(annual_ret_base) else np.nan
+
+        trades_per_day = safe_div(event_data_add.shape[0], len(pnl_byDate))
+
+        max_drawday_date = (
+            pnl_byDate.loc[pnl_byDate['pl_n'].idxmin(), 'normed_date']
+            if not pnl_byDate.empty and 'pl_n' in pnl_byDate.columns and pnl_byDate['pl_n'].notna().any()
+            else np.nan
+        )
 
         # Data Dictionary for metrics (second part)
         metrics_dict = {
@@ -136,18 +174,18 @@ def dashboard(dta_in: pd.DataFrame, comm: float, mod_id: str, long_short: int, d
             'trade days': len(pnl_byDate),  # Direct value
             'total trades': event_data_add.shape[0], # Direct value
             'total trading days': biz_days, # Direct value UPDATE
-            'trades per day':event_data_add.shape[0] / len(pnl_byDate), # Direct value
+            'trades per day':trades_per_day, # Direct value UPDATE
             'max draw dollar': pnl_bySymbolDate.loc[pnl_bySymbolDate['pl_n'].idxmin()]['pl_n'],  # Direct value
             'max draw date': pnl_bySymbolDate.loc[pnl_bySymbolDate['pl_n'].idxmin()]['normed_date'],  # Direct value    
             'max drawday dollar': pnl_byDate.iloc[pnl_byDate['pl_n'].idxmin()]['pl_n'],  # Direct value
-            'max drawday date': pnl_byDate.iloc[pnl_byDate['pl_n'].idxmin()]['normed_date'],  # Direct value
-            'share pl': (sum(pnl_bySymbolDate['pl_n']) / sum(pnl_bySymbolDate['matched_shares'] * 2 * long_short))*100,  # Direct value UPDATE
+            'max drawday date': max_drawday_date,  # Direct value
+            'share pl': share_pl,  # Direct value UPDATE
             'daily win': pnl_byDate['wins'].mean(), # Direct value UPDATE
             'ret_n': pnl_byDate.iloc[-1]['comp_ret_n'] - 1,  # Direct value
             'ret_g': pnl_byDate.iloc[-1]['comp_ret_g'] - 1,  # Direct value
-            'annual ret': np.log(pnl_byDate.iloc[-1]['comp_ret_n']) * (252/biz_days), # Direct value UPDATE
-            'sharpe': (pnl_byDate['ret_n'].mean() / vol) * np.sqrt(252),  # UPDATE
-            'sortino': (pnl_byDate['ret_n'].mean()/pnl_byDate['ret_n_neg'].std()) * np.sqrt(252) , #UPDATE
+            'annual ret': annual_ret, # Direct value UPDATE
+            'sharpe': sharpe,  # UPDATE
+            'sortino': sortino , #UPDATE
             'skewness': pnl_byDate['ret_n'].skew(),  # Direct value
             'kurtos': pnl_byDate['ret_n'].kurtosis(),  # Direct value
             'annual vol': vol * np.sqrt(252),  # Direct value
