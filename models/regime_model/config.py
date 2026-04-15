@@ -30,6 +30,10 @@ class RunConfig:
     overwrite_outputs: bool = True
 
     use_selected_features: bool = True
+    fixed_feature_columns: Optional[Tuple[str, ...]] = None
+    fixed_best_params: Optional[dict] = None
+    skip_tuning: bool = False
+    skip_rfecv: bool = False
     tuning_mode: str = "fast"
     random_state: int = 42
     search_rows: int = 1000

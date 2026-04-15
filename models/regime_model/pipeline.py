@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 from sklearn.feature_selection import RFECV
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import TimeSeriesSplit
@@ -305,6 +306,32 @@ def _select_training_features(partition_ins_80: pd.DataFrame, feature_columns: L
     }
 
 
+def _validate_fixed_feature_columns(
+    fixed_feature_columns,
+    partition_map: Dict[str, pd.DataFrame],
+) -> List[str]:
+    fixed_columns = list(fixed_feature_columns)
+    if not fixed_columns:
+        raise ValueError("fixed_feature_columns is empty.")
+
+    for df_name, df in partition_map.items():
+        missing_columns = [col for col in fixed_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError("Missing fixed feature columns in %s: %s" % (df_name, missing_columns))
+
+    return fixed_columns
+
+
+def _build_fixed_xgb_model(fixed_best_params: Dict[str, object], random_state: int):
+    model_params = dict(fixed_best_params)
+    model_params.setdefault("learning_rate", 0.1)
+    model_params.setdefault("objective", "binary:logistic")
+    model_params.setdefault("tree_method", "hist")
+    model_params.setdefault("nthread", -1)
+    model_params.setdefault("random_state", random_state)
+    return xgb.XGBClassifier(**model_params)
+
+
 def _calculate_max_train_size(df: pd.DataFrame, target_lookback_months: int) -> int:
     indexed = df.copy()
     indexed["normed_date"] = pd.to_datetime(indexed["normed_date"])
@@ -485,10 +512,33 @@ def train_regime_xgb(config: RunConfig, dataset: Optional[DatasetStageResult] = 
         require_non_empty_df(df, name)
         require_columns(df, ["normed_date", config.target_column, "mtm_pl"], name)
 
+    if config.skip_tuning and config.fixed_best_params is None:
+        raise ValueError("skip_tuning=True requires fixed_best_params.")
+
+    fixed_feature_columns_used = config.fixed_feature_columns is not None
+    fixed_best_params_used = bool(config.skip_tuning)
+
     all_feature_columns = build_feature_list_from_columns(partition_ins_80)
-    selection = _select_training_features(partition_ins_80, all_feature_columns)
-    selected_feature_columns = selection["selected_features"]
-    ml_list = selected_feature_columns if config.use_selected_features else all_feature_columns
+    if fixed_feature_columns_used:
+        ml_list = _validate_fixed_feature_columns(
+            config.fixed_feature_columns,
+            {
+                "partition_ins_80": partition_ins_80,
+                "partition_ins_20": partition_ins_20,
+                "partition_oos": partition_oos,
+            },
+        )
+        selected_feature_columns = list(ml_list)
+        selection = {
+            "corr_mtm_list": [],
+            "corr_wins_list": [],
+            "ic_pruned_list": [],
+            "selected_features": selected_feature_columns,
+        }
+    else:
+        selection = _select_training_features(partition_ins_80, all_feature_columns)
+        selected_feature_columns = selection["selected_features"]
+        ml_list = selected_feature_columns if config.use_selected_features else all_feature_columns
     require_non_empty_list(ml_list, "ml_list")
 
     for df_name, df in (
@@ -505,44 +555,53 @@ def train_regime_xgb(config: RunConfig, dataset: Optional[DatasetStageResult] = 
     X_oos = partition_oos[ml_list]
     y_oos = partition_oos[config.target_column]
 
-    model, best_params = tune_xgb_fast_compatible(
-        X_train,
-        y_train,
-        X_test,
-        y_test,
-        search_rows=config.search_rows,
-        n_iter=config.n_iter,
-        cv_splits=config.cv_splits,
-        n_jobs=config.search_n_jobs,
-        search_n_estimators=config.search_n_estimators,
-        final_n_estimators_cap=config.final_n_estimators_cap,
-        early_stopping_rounds=config.early_stopping_rounds,
-        random_state=config.random_state,
-    )
+    if config.skip_tuning:
+        best_params = dict(config.fixed_best_params)
+        model = _build_fixed_xgb_model(best_params, random_state=config.random_state)
+    else:
+        model, best_params = tune_xgb_fast_compatible(
+            X_train,
+            y_train,
+            X_test,
+            y_test,
+            search_rows=config.search_rows,
+            n_iter=config.n_iter,
+            cv_splits=config.cv_splits,
+            n_jobs=config.search_n_jobs,
+            search_n_estimators=config.search_n_estimators,
+            final_n_estimators_cap=config.final_n_estimators_cap,
+            early_stopping_rounds=config.early_stopping_rounds,
+            random_state=config.random_state,
+        )
 
-    max_train_size = _calculate_max_train_size(partition_ins_80, config.target_lookback_months)
-    rfecv = RFECV(
-        estimator=model,
-        step=config.rfecv_step,
-        min_features_to_select=config.rfecv_min_features_to_select,
-        cv=TimeSeriesSplit(max_train_size=max_train_size, n_splits=config.cv_splits),
-        scoring=config.rfecv_scoring,
-        n_jobs=config.rfecv_n_jobs,
-    )
-    rfecv.fit(X_train, y_train)
+    if config.skip_rfecv:
+        max_train_size = None
+        rfecv_feature_columns = list(ml_list)
+    else:
+        max_train_size = _calculate_max_train_size(partition_ins_80, config.target_lookback_months)
+        rfecv = RFECV(
+            estimator=model,
+            step=config.rfecv_step,
+            min_features_to_select=config.rfecv_min_features_to_select,
+            cv=TimeSeriesSplit(max_train_size=max_train_size, n_splits=config.cv_splits),
+            scoring=config.rfecv_scoring,
+            n_jobs=config.rfecv_n_jobs,
+        )
+        rfecv.fit(X_train, y_train)
 
-    rfecv_feature_columns = X_train.columns[rfecv.support_].tolist()
-    require_non_empty_list(rfecv_feature_columns, "rfecv_feature_columns")
+        rfecv_feature_columns = X_train.columns[rfecv.support_].tolist()
+        require_non_empty_list(rfecv_feature_columns, "rfecv_feature_columns")
 
-    X_train_rfecv = partition_ins_80[rfecv_feature_columns]
-    X_test_rfecv = partition_ins_20[rfecv_feature_columns]
-    X_oos_rfecv = partition_oos[rfecv_feature_columns]
+    final_feature_columns = list(rfecv_feature_columns)
+    X_train_final = partition_ins_80[final_feature_columns]
+    X_test_final = partition_ins_20[final_feature_columns]
+    X_oos_final = partition_oos[final_feature_columns]
 
-    model.fit(X_train_rfecv, y_train)
+    model.fit(X_train_final, y_train)
 
-    yhat_train_1 = model.predict_proba(X_train_rfecv)[:, 1]
-    yhat_test_1 = model.predict_proba(X_test_rfecv)[:, 1]
-    yhat_oos_1 = model.predict_proba(X_oos_rfecv)[:, 1]
+    yhat_train_1 = model.predict_proba(X_train_final)[:, 1]
+    yhat_test_1 = model.predict_proba(X_test_final)[:, 1]
+    yhat_oos_1 = model.predict_proba(X_oos_final)[:, 1]
 
     # ADDED: including prediction threshold
     threshold = config.classification_threshold
@@ -582,6 +641,11 @@ def train_regime_xgb(config: RunConfig, dataset: Optional[DatasetStageResult] = 
         "all_feature_count": len(all_feature_columns),
         "selected_feature_count": len(selected_feature_columns),
         "rfecv_feature_count": len(rfecv_feature_columns),
+        "fixed_feature_columns_used": fixed_feature_columns_used,
+        "fixed_best_params_used": fixed_best_params_used,
+        "skip_tuning": config.skip_tuning,
+        "skip_rfecv": config.skip_rfecv,
+        "final_feature_columns": final_feature_columns,
         "train": _classification_summary(y_train, pred_train),
         "test": _classification_summary(y_test, pred_test),
         "oos": _classification_summary(y_oos, pred_oos),
@@ -605,7 +669,7 @@ def train_regime_xgb(config: RunConfig, dataset: Optional[DatasetStageResult] = 
         artifact_paths.update(
             save_model_bundle(
                 model=model,
-                feature_columns=rfecv_feature_columns,
+                feature_columns=final_feature_columns,
                 metadata={
                     "model_name": config.model_name,
                     "round_name": config.round_name,
@@ -615,6 +679,11 @@ def train_regime_xgb(config: RunConfig, dataset: Optional[DatasetStageResult] = 
                     "best_params": best_params,
                     "selected_feature_columns": selected_feature_columns,
                     "rfecv_feature_columns": rfecv_feature_columns,
+                    "fixed_feature_columns_used": fixed_feature_columns_used,
+                    "fixed_best_params_used": fixed_best_params_used,
+                    "skip_tuning": config.skip_tuning,
+                    "skip_rfecv": config.skip_rfecv,
+                    "final_feature_columns": final_feature_columns,
                     "dataset_source": dataset_result.source,
                     #ADDED
                     "classification_threshold": config.classification_threshold,
